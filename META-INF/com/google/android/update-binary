@@ -32,39 +32,6 @@ is_mounted() {
   return $?
 }
 
-mount_image() {
-  if [ ! -d "$2" ]; then
-    mkdir -p $2 2>/dev/null
-    chmod 755 $2
-    [ ! -d "$2" ] && return 1
-  fi
-  if (! is_mounted $2); then
-    LOOPDEVICE=
-    for LOOP in 0 1 2 3 4 5 6 7; do
-      if (! is_mounted $2); then
-        LOOPDEVICE=/dev/block/loop$LOOP
-        if [ ! -f "$LOOPDEVICE" ]; then
-          mknod $LOOPDEVICE b 7 $LOOP
-        fi
-        losetup $LOOPDEVICE $1
-        if [ "$?" -eq "0" ]; then
-          mount -t ext4 -o loop $LOOPDEVICE $2
-          if (! is_mounted $2); then
-            /system/bin/toolbox mount -t ext4 -o loop $LOOPDEVICE $2
-          fi
-          if (! is_mounted $2); then
-            /system/bin/toybox mount -t ext4 -o loop $LOOPDEVICE $2
-          fi
-        fi
-        if (is_mounted $2); then
-          ui_print "- Mounting $1 to $2"
-          break;
-        fi
-      fi
-    done
-  fi
-}
-
 set_perm() {
   chown $2:$3 $1 || exit 1
   chmod $4 $1 || exit 1
@@ -137,14 +104,6 @@ if [ -z "$BOOTMODE" ]; then
   BOOTMODE=false
 fi
 
-if ($BOOTMODE) && (! is_mounted /magisk); then
-  ui_print "! Magisk is not activated!... abort"
-  exit 1
-fi
-
-# Fix SuperSU.....
-($BOOTMODE) && /data/magisk/sepolicy-inject -s fsck --live
-
 TMPDIR=/tmp
 MOUNTPATH=/magisk
 IMGNAME=magisk.img
@@ -159,7 +118,7 @@ fi
 
 mkdir -p $TMPDIR 2>/dev/null
 cd $TMPDIR
-unzip -o "$ZIP" config.sh
+unzip -o $ZIP config.sh
 
 if [ ! -f "config.sh" ]; then
   ui_print "! Failed: Unable to extract zip file!"
@@ -172,12 +131,15 @@ if ($CACHEMOD); then
   MOUNTPATH=$CACHEPATH
 fi
 
+mkdir -p $MOUNTPATH 2>/dev/null
+chmod 755 $MOUNTPATH
+
 INSTALLER=$TMPDIR/$MODID
 MODPATH=$MOUNTPATH/$MODID
 
 mkdir -p $INSTALLER
 cd $INSTALLER
-unzip -o "$ZIP" common/* module.prop
+unzip -o $ZIP common/* module.prop
 
 ##########################################################################################
 # Main
@@ -208,11 +170,11 @@ ABI2=$(grep_prop ro.product.cpu.abi2 | cut -c-3)
 ABILONG=$(grep_prop ro.product.cpu.abi)
 
 ARCH=arm
-IS64BIT=false
+IS64BIT=
 if [ "$ABI" = "x86" ]; then ARCH=x86; fi;
 if [ "$ABI2" = "x86" ]; then ARCH=x86; fi;
-if [ "$ABILONG" = "arm64-v8a" ]; then ARCH=arm64; IS64BIT=true; fi;
-if [ "$ABILONG" = "x86_64" ]; then ARCH=x64; IS64BIT=true; fi;
+if [ "$ABILONG" = "arm64-v8a" ]; then ARCH=arm64; IS64BIT=1; fi;
+if [ "$ABILONG" = "x86_64" ]; then ARCH=x64; IS64BIT=1; fi;
 
 # You can get the Android API version from $API, the CPU architecture from $ARCH
 # Useful if you are creating Android version / platform dependent mods
@@ -255,20 +217,42 @@ if (! $CACHEMOD); then
     make_ext4fs -l ${SIZE}M -a /magisk -S $INSTALLER/common/file_contexts_image $IMG
   fi
 
-  mount_image $IMG $MOUNTPATH
-  if (! is_mounted $MOUNTPATH); then
-    ui_print "! $IMG mount failed... abort"
-    exit 1
-  fi
+  ui_print "- Mounting $IMG to $MOUNTPATH"
+  LOOPDEVICE=
+  for LOOP in 0 1 2 3 4 5 6 7; do
+    if (! is_mounted $MOUNTPATH); then
+      LOOPDEVICE=/dev/block/loop$LOOP
+      if [ ! -f "$LOOPDEVICE" ]; then
+        mknod $LOOPDEVICE b 7 $LOOP
+      fi
+      losetup $LOOPDEVICE $IMG
+      if [ "$?" -eq "0" ]; then
+        mount -t ext4 -o loop $LOOPDEVICE $MOUNTPATH
+        if (! is_mounted $MOUNTPATH); then
+          /system/bin/toolbox mount -t ext4 -o loop $LOOPDEVICE $MOUNTPATH
+        fi
+        if (! is_mounted $MOUNTPATH); then
+          /system/bin/toybox mount -t ext4 -o loop $LOOPDEVICE $MOUNTPATH
+        fi
+      fi
+      if (is_mounted $MOUNTPATH); then
+        break;
+      fi
+    fi
+  done
+fi
+
+if ($BOOTMODE) && (! is_mounted /magisk); then
+  ui_print "! Magisk is not activated!"
+  exit 1
 fi
 
 # Create mod paths
-rm -rf $MODPATH
 mkdir -p $MODPATH
 
 # Copy files
 ui_print "- Copying files"
-unzip -o "$ZIP" system/* -d $MODPATH
+unzip -o $ZIP system/* -d $MODPATH
 
 # Handle replace folders
 for TARGET in $REPLACE; do
